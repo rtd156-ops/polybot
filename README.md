@@ -95,6 +95,19 @@ results down per strategy. Disabled (or absent) → single implicit `default`
 strategy, identical to before. Arbitrage runs once per cycle (tagged
 `arbitrage`), opt-in.
 
+Once the books have run a while, **rank them head-to-head**:
+
+```bash
+python scripts/strategy_compare.py            # ranked by risk-adjusted score
+python scripts/strategy_compare.py --sort pnl # or return|winrate|drawdown
+python scripts/strategy_compare.py --json     # machine-readable (for Rook)
+```
+
+The score is Calmar-like (`return% / max(maxDrawdown%, 1)`), so a strategy that
+grinds steady gains beats one with bigger PnL but a deep drawdown. It warns when
+there aren't yet enough closed trades to be meaningful — heed that before
+promoting any strategy toward live.
+
 ## Operating modes
 
 - `analysis` — scan, score, alert. **No orders**, not even simulated.
