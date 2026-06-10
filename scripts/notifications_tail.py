@@ -30,8 +30,10 @@ def _fmt(evt: dict) -> str:
     d = evt.get("data", {})
     event = evt.get("event", "?")
     ts = evt.get("ts", "")
+    sid = evt.get("strategy_id") or (d.get("strategy_id") if isinstance(d, dict) else None)
     market = d.get("market") or d.get("market_id") or ""
-    bits = [f"[{ts}] {event}"]
+    prefix = f"[{sid}] " if sid and sid != "default" else ""
+    bits = [f"[{ts}] {prefix}{event}"]
     if market:
         bits.append(f"· {str(market)[:60]}")
     if d.get("suggested_action"):

@@ -189,11 +189,23 @@ class Ledger:
         self._migrate()
 
     def _migrate(self) -> None:
-        """Add columns introduced after a DB was first created. Idempotent."""
+        """Add columns introduced after a DB was first created. Idempotent.
+
+        This is also how fresh DBs get the strategy_id column: tables are created
+        without it, then it's added here -- so old and new DBs converge safely.
+        Existing rows default to strategy_id='default'.
+        """
+        sid = ("strategy_id", "TEXT DEFAULT 'default'")
         wanted = {
-            "paper_orders": [("fee_usd", "REAL DEFAULT 0"), ("slippage_bps", "REAL DEFAULT 0")],
-            "live_orders": [("fee_usd", "REAL DEFAULT 0"), ("slippage_bps", "REAL DEFAULT 0")],
-            "fills": [("fee_usd", "REAL DEFAULT 0"), ("slippage_bps", "REAL DEFAULT 0")],
+            "opportunities": [sid],
+            "signals": [sid],
+            "risk_rejections": [sid],
+            "paper_orders": [("fee_usd", "REAL DEFAULT 0"), ("slippage_bps", "REAL DEFAULT 0"), sid],
+            "live_orders": [("fee_usd", "REAL DEFAULT 0"), ("slippage_bps", "REAL DEFAULT 0"), sid],
+            "positions": [sid],
+            "fills": [("fee_usd", "REAL DEFAULT 0"), ("slippage_bps", "REAL DEFAULT 0"), sid],
+            "balance_snapshots": [sid],
+            "events": [sid],
         }
         with self._tx() as cur:
             for table, cols in wanted.items():
@@ -233,75 +245,77 @@ class Ledger:
                  m.volume_usd, m.liquidity_usd, m.end_date, m.url, _now()),
             )
 
-    def record_opportunity(self, opp: Opportunity) -> int:
+    def record_opportunity(self, opp: Opportunity, strategy_id: str = "default") -> int:
         d = opp.to_dict()
         with self._tx() as cur:
             cur.execute(
                 """INSERT INTO opportunities(created_at,market_id,question,category,
                    outcome,market_price,estimated_probability,edge,confidence,spread,
-                   useful_liquidity_usd,suggested_action,reasons,url)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   useful_liquidity_usd,suggested_action,reasons,url,strategy_id)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (d["created_at"], d["market_id"], d["question"], d["category"],
                  d["outcome"], d["market_price"], d["estimated_probability"],
                  d["edge"], d["confidence"], d["spread"], d["useful_liquidity_usd"],
-                 d["suggested_action"], json.dumps(d["reasons"]), d["url"]),
+                 d["suggested_action"], json.dumps(d["reasons"]), d["url"], strategy_id),
             )
             return int(cur.lastrowid)
 
-    def record_signal(self, sig: Signal) -> None:
+    def record_signal(self, sig: Signal, strategy_id: str = "default") -> None:
         opp = sig.opportunity
         with self._tx() as cur:
             cur.execute(
                 """INSERT INTO signals(created_at,market_id,outcome,accepted,reason,
-                   side,target_price,notional_usd) VALUES(?,?,?,?,?,?,?,?)""",
+                   side,target_price,notional_usd,strategy_id) VALUES(?,?,?,?,?,?,?,?,?)""",
                 (sig.created_at, opp.market.market_id, opp.outcome.value,
                  1 if sig.accepted else 0, sig.reason,
                  sig.side.value if sig.side else None,
-                 sig.target_price, sig.notional_usd),
+                 sig.target_price, sig.notional_usd, strategy_id),
             )
             if not sig.accepted:
                 cur.execute(
                     """INSERT INTO risk_rejections(created_at,market_id,outcome,reason,
-                       edge,confidence) VALUES(?,?,?,?,?,?)""",
+                       edge,confidence,strategy_id) VALUES(?,?,?,?,?,?,?)""",
                     (sig.created_at, opp.market.market_id, opp.outcome.value,
-                     sig.reason, opp.estimate.edge, opp.estimate.confidence),
+                     sig.reason, opp.estimate.edge, opp.estimate.confidence, strategy_id),
                 )
 
-    def record_order(self, order: OrderResult) -> None:
+    def record_order(self, order: OrderResult, strategy_id: str = "default") -> None:
         table = "paper_orders" if order.is_paper else "live_orders"
         d = order.to_dict()
         with self._tx() as cur:
             cur.execute(
                 f"""INSERT OR REPLACE INTO {table}(order_id,created_at,market_id,
                     token_id,outcome,side,price,size,filled_size,notional_usd,
-                    status,reason,fee_usd,slippage_bps)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    status,reason,fee_usd,slippage_bps,strategy_id)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (d["order_id"], d["created_at"], d["market_id"], d["token_id"],
                  d["outcome"], d["side"], d["price"], d["size"], d["filled_size"],
                  d["notional_usd"], d["status"], d["reason"],
-                 d.get("fee_usd", 0.0), d.get("slippage_bps", 0.0)),
+                 d.get("fee_usd", 0.0), d.get("slippage_bps", 0.0), strategy_id),
             )
 
-    def record_fill(self, order: OrderResult) -> None:
+    def record_fill(self, order: OrderResult, strategy_id: str = "default") -> None:
         with self._tx() as cur:
             cur.execute(
                 """INSERT INTO fills(created_at,order_id,market_id,token_id,side,
-                   price,size,is_paper,fee_usd,slippage_bps)
-                   VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                   price,size,is_paper,fee_usd,slippage_bps,strategy_id)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
                 (_now(), order.order_id, order.market_id, order.token_id,
                  order.side.value, order.price, order.filled_size,
-                 1 if order.is_paper else 0, order.fee_usd, order.slippage_bps),
+                 1 if order.is_paper else 0, order.fee_usd, order.slippage_bps, strategy_id),
             )
 
-    def open_position(self, *, market: Market, order: OrderResult) -> int:
+    def open_position(self, *, market: Market, order: OrderResult,
+                      strategy_id: str = "default") -> int:
         with self._tx() as cur:
             cur.execute(
                 """INSERT INTO positions(opened_at,market_id,category,token_id,outcome,
-                   size,entry_price,notional_usd,realized_pnl,status,is_paper)
-                   VALUES(?,?,?,?,?,?,?,?,0,?,?)""",
+                   size,entry_price,notional_usd,realized_pnl,status,is_paper,strategy_id)
+                   VALUES(?,?,?,?,?,?,?,?,0,?,?,?)""",
                 (order.created_at, market.market_id, market.category or "Uncategorized",
                  order.token_id, order.outcome.value, order.filled_size, order.price,
-                 order.notional_usd, OrderStatus.OPEN.value, 1 if order.is_paper else 0),
+                 order.notional_usd, OrderStatus.OPEN.value,
+                 1 if order.is_paper else 0, strategy_id),
             )
             return int(cur.lastrowid)
 
@@ -322,22 +336,25 @@ class Ledger:
             return pnl
 
     def snapshot_balance(self, *, cash: float, blocked: float, unrealized: float,
-                         realized: float, is_paper: bool = True) -> None:
+                         realized: float, is_paper: bool = True,
+                         strategy_id: str = "default") -> None:
         with self._tx() as cur:
             cur.execute(
                 """INSERT INTO balance_snapshots(created_at,cash_usd,blocked_usd,
-                   unrealized_pnl,realized_pnl,equity_usd,is_paper)
-                   VALUES(?,?,?,?,?,?,?)""",
+                   unrealized_pnl,realized_pnl,equity_usd,is_paper,strategy_id)
+                   VALUES(?,?,?,?,?,?,?,?)""",
                 (_now(), cash, blocked, unrealized, realized,
-                 cash + blocked + unrealized, 1 if is_paper else 0),
+                 cash + blocked + unrealized, 1 if is_paper else 0, strategy_id),
             )
 
-    def record_event(self, event_type: str, payload: dict, severity: str = "info") -> None:
+    def record_event(self, event_type: str, payload: dict, severity: str = "info",
+                     strategy_id: str = "default") -> None:
         """Audit any notable event. Payload must already be secret-scrubbed."""
         with self._tx() as cur:
             cur.execute(
-                "INSERT INTO events(created_at,event_type,severity,payload) VALUES(?,?,?,?)",
-                (_now(), event_type, severity, json.dumps(payload, default=str)),
+                """INSERT INTO events(created_at,event_type,severity,payload,strategy_id)
+                   VALUES(?,?,?,?,?)""",
+                (_now(), event_type, severity, json.dumps(payload, default=str), strategy_id),
             )
 
     # -- reads / reports ------------------------------------------------------
@@ -348,17 +365,38 @@ class Ledger:
         finally:
             cur.close()
 
-    def open_positions(self, is_paper: bool = True) -> list[sqlite3.Row]:
+    def open_positions(self, is_paper: bool = True,
+                       strategy_id: Optional[str] = None) -> list[sqlite3.Row]:
+        if strategy_id is None:
+            return self.query(
+                "SELECT * FROM positions WHERE status=? AND is_paper=? ORDER BY opened_at",
+                (OrderStatus.OPEN.value, 1 if is_paper else 0),
+            )
         return self.query(
-            "SELECT * FROM positions WHERE status=? AND is_paper=? ORDER BY opened_at",
-            (OrderStatus.OPEN.value, 1 if is_paper else 0),
+            "SELECT * FROM positions WHERE status=? AND is_paper=? AND strategy_id=? "
+            "ORDER BY opened_at",
+            (OrderStatus.OPEN.value, 1 if is_paper else 0, strategy_id),
         )
 
+    def strategy_ids(self) -> list[str]:
+        """Distinct strategy ids that appear anywhere in the ledger."""
+        rows = self.query(
+            "SELECT DISTINCT strategy_id s FROM positions "
+            "UNION SELECT DISTINCT strategy_id s FROM paper_orders "
+            "UNION SELECT DISTINCT strategy_id s FROM opportunities"
+        )
+        return sorted({r["s"] for r in rows if r["s"]})
+
     def risk_state_inputs(
-        self, is_paper: bool = True, starting_balance: float = 0.0
+        self, is_paper: bool = True, starting_balance: float = 0.0,
+        strategy_id: str = "default",
     ) -> dict[str, Any]:
-        """Aggregate exposure, daily counters, and equity for the RiskManager."""
-        positions = self.open_positions(is_paper)
+        """Aggregate exposure, daily counters, and equity for ONE strategy.
+
+        Every figure is scoped to ``strategy_id`` so each strategy's risk is
+        evaluated against its own book, never the global portfolio.
+        """
+        positions = self.open_positions(is_paper, strategy_id=strategy_id)
         by_cat: dict[str, float] = {}
         by_mkt: dict[str, float] = {}
         total = 0.0
@@ -370,21 +408,24 @@ class Ledger:
         today = _today()
         ip = 1 if is_paper else 0
         new_today = self.query(
-            "SELECT COUNT(*) c FROM positions WHERE substr(opened_at,1,10)=? AND is_paper=?",
-            (today, ip),
+            "SELECT COUNT(*) c FROM positions WHERE substr(opened_at,1,10)=? "
+            "AND is_paper=? AND strategy_id=?",
+            (today, ip, strategy_id),
         )[0]["c"]
         realized_today = self.query(
             """SELECT COALESCE(SUM(realized_pnl),0) p FROM positions
-               WHERE substr(closed_at,1,10)=? AND is_paper=?""",
-            (today, ip),
+               WHERE substr(closed_at,1,10)=? AND is_paper=? AND strategy_id=?""",
+            (today, ip, strategy_id),
         )[0]["p"]
         realized_total = self.query(
-            "SELECT COALESCE(SUM(realized_pnl),0) p FROM positions WHERE is_paper=?",
-            (ip,),
+            "SELECT COALESCE(SUM(realized_pnl),0) p FROM positions "
+            "WHERE is_paper=? AND strategy_id=?",
+            (ip, strategy_id),
         )[0]["p"]
         peak_snapshot = self.query(
-            "SELECT COALESCE(MAX(equity_usd),0) e FROM balance_snapshots WHERE is_paper=?",
-            (ip,),
+            "SELECT COALESCE(MAX(equity_usd),0) e FROM balance_snapshots "
+            "WHERE is_paper=? AND strategy_id=?",
+            (ip, strategy_id),
         )[0]["e"]
 
         current_equity = float(starting_balance) + float(realized_total)

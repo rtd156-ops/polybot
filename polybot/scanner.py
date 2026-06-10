@@ -82,10 +82,14 @@ class MarketScanner:
         self.cfg = cfg
         self.gamma = gamma_client
 
+    def fetch_raw(self) -> list[Market]:
+        """Fetch raw active markets once (no filtering). Shared across strategies."""
+        limit = int(self.cfg.get("scanner", "max_markets_scanned", default=400))
+        return self.gamma.fetch_markets(limit=limit)
+
     def scan(self) -> tuple[list[Market], list[FilterResult]]:
         """Returns (passing_markets, all_filter_results)."""
-        limit = int(self.cfg.get("scanner", "max_markets_scanned", default=400))
-        raw = self.gamma.fetch_markets(limit=limit)
+        raw = self.fetch_raw()
         results = [filter_market(m, self.cfg) for m in raw]
         passing = [r.market for r in results if r.passed]
         log.info(

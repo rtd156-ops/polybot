@@ -67,15 +67,22 @@ class Notifier:
         # Default to True for unknown/unspecified event types.
         return bool(self.event_flags.get(event_type, True))
 
-    def send(self, event_type: str, payload: dict) -> bool:
+    def send(self, event_type: str, payload: dict,
+             strategy_id: Optional[str] = None) -> bool:
         """Fan an alert out to every enabled sink. Returns True if any fired.
 
+        ``strategy_id`` is surfaced at the top level (and inside data) so a relay
+        like Rook can prefix alerts with [conservative]/[balanced]/[aggressive].
         Never raises -- notification failure must not break the trading loop.
         """
         if not self._event_allowed(event_type):
             return False
 
-        body = {"ts": _utcnow(), "event": event_type, "data": redact(payload)}
+        data = redact(payload)
+        if strategy_id is not None and isinstance(data, dict):
+            data.setdefault("strategy_id", strategy_id)
+        body = {"ts": _utcnow(), "strategy_id": strategy_id,
+                "event": event_type, "data": data}
         fired = False
         if self.outbox_enabled:
             fired = self._write_outbox(body) or fired

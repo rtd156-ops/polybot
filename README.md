@@ -75,6 +75,26 @@ Octagon risk engine, and the agent-next paper trader (the legit, vetted ones):
 - **WebSocket order book** — opt-in reconnecting stream (`clients/ws.py`) for
   low-latency strategies; REST polling remains the default.
 
+## Multi-strategy (paper)
+
+Run several strategies as **independent paper books in one process** to compare
+them before choosing one for live. Enable in `config.local.yaml`:
+
+```yaml
+strategies:
+  enabled: true   # definitions (conservative/balanced/aggressive) ship in config.yaml
+```
+
+Each definition deep-merges over the base `paper`/`probability`/`risk`/`scanner`
+sections, so anything omitted is inherited. Every opportunity, signal, order,
+fill, position, risk rejection and balance snapshot is tagged with `strategy_id`;
+risk limits are evaluated **per strategy** (its own balance, exposure, drawdown,
+Kelly bankroll) — never globally. Alerts carry `strategy_id` so Rook can prefix
+`[conservative]` / `[balanced]` / `[aggressive]`. `scripts/paper_report.py` breaks
+results down per strategy. Disabled (or absent) → single implicit `default`
+strategy, identical to before. Arbitrage runs once per cycle (tagged
+`arbitrage`), opt-in.
+
 ## Operating modes
 
 - `analysis` — scan, score, alert. **No orders**, not even simulated.

@@ -214,6 +214,7 @@ DEFAULTS: dict = {
     "storage": {"db_path": "data/polybot.db"},
     "logging": {"level": "INFO", "format": "json"},
     "engine": {"loop_interval_seconds": 300, "scan_top_n_for_book": 60},
+    "strategies": {"enabled": False, "definitions": {}},
 }
 
 

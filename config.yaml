@@ -123,6 +123,7 @@ notifications:
     path: "data/outbox.jsonl"
   events:                                # toggle individual event types
     opportunity_detected: true
+    arbitrage_detected: true
     signal_rejected: false               # noisy; off by default
     paper_order_opened: true
     paper_order_closed: true
@@ -143,3 +144,62 @@ logging:
 engine:
   loop_interval_seconds: 300             # paper/analysis loop cadence
   scan_top_n_for_book: 60                # fetch CLOB book for top N filtered mkts
+
+# --- Multi-strategy (PAPER) -------------------------------------------------
+# When enabled, the engine runs each definition as an INDEPENDENT paper book in
+# the same process: separate balance, risk limits, exposure, PnL and ledger
+# rows (tagged with strategy_id). Each block deep-merges over the base
+# paper/probability/risk/scanner sections, so anything omitted is inherited.
+# Backward compatible: if disabled (or absent), the bot runs exactly as before
+# under a single implicit strategy id "default".
+strategies:
+  enabled: false
+  definitions:
+    conservative:
+      paper:
+        starting_balance_usd: 1000
+        default_order_notional_usd: 10
+      probability:
+        min_edge: 0.07
+        min_confidence: 0.55
+      risk:
+        max_notional_per_market_usd: 50
+        max_total_exposure_usd: 250
+        max_new_positions_per_day: 3
+        max_daily_loss_usd: 30
+        max_drawdown_pct: 0.05
+        use_kelly: true
+        kelly_multiplier: 0.25
+        max_kelly_fraction: 0.03
+    balanced:
+      paper:
+        starting_balance_usd: 2000
+        default_order_notional_usd: 25
+      probability:
+        min_edge: 0.04
+        min_confidence: 0.35
+      risk:
+        max_notional_per_market_usd: 100
+        max_total_exposure_usd: 1000
+        max_new_positions_per_day: 10
+        max_daily_loss_usd: 150
+        max_drawdown_pct: 0.20
+        use_kelly: true
+        kelly_multiplier: 0.5
+        max_kelly_fraction: 0.10
+    aggressive:
+      paper:
+        starting_balance_usd: 3000
+        default_order_notional_usd: 50
+      probability:
+        min_edge: 0.025
+        min_confidence: 0.25
+      risk:
+        max_notional_per_market_usd: 200
+        max_total_exposure_usd: 2000
+        max_new_positions_per_day: 20
+        max_daily_loss_usd: 300
+        max_drawdown_pct: 0.30
+        use_kelly: true
+        kelly_multiplier: 0.75
+        max_kelly_fraction: 0.15
