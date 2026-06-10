@@ -116,6 +116,11 @@ execution:
 notifications:
   enabled: true                          # webhook URL still required (from .env)
   timeout_seconds: 10
+  # File outbox: append every (allowed) event as a JSON line. An external
+  # assistant like Rook/OpenClaw tails this file to relay alerts to you.
+  outbox:
+    enabled: true
+    path: "data/outbox.jsonl"
   events:                                # toggle individual event types
     opportunity_detected: true
     signal_rejected: false               # noisy; off by default

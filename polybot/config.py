@@ -208,6 +208,7 @@ DEFAULTS: dict = {
     "notifications": {
         "enabled": True,
         "timeout_seconds": 10,
+        "outbox": {"enabled": False, "path": "data/outbox.jsonl"},
         "events": {},
     },
     "storage": {"db_path": "data/polybot.db"},

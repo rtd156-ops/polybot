@@ -11,6 +11,8 @@ bot runs perfectly fine in analysis/paper with alerts off.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 import requests
@@ -21,6 +23,10 @@ from .models import Opportunity, OrderResult, Signal
 from .secretsafe import redact
 
 log = get_logger("polybot.notify")
+
+
+def _utcnow() -> str:
+    return datetime.now(tz=timezone.utc).isoformat()
 
 # Canonical event types (keep in sync with config.notifications.events).
 EVENTS = (
@@ -37,6 +43,13 @@ EVENTS = (
 
 
 class Notifier:
+    """Fans events out to any enabled sink: a webhook and/or a local JSONL outbox.
+
+    The outbox is an append-only ``data/outbox.jsonl`` that an external assistant
+    (e.g. Rook/OpenClaw) can tail to relay alerts to you -- no inbound network or
+    shared secret required. Every payload is redacted before it leaves the process.
+    """
+
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
         self.enabled = bool(cfg.get("notifications", "enabled", default=True))
@@ -44,22 +57,43 @@ class Notifier:
         self.token = cfg.secrets.webhook_token
         self.timeout = float(cfg.get("notifications", "timeout_seconds", default=10))
         self.event_flags = cfg.get("notifications", "events", default={}) or {}
+        # File outbox (independent of the webhook).
+        self.outbox_enabled = bool(cfg.get("notifications", "outbox", "enabled", default=False))
+        outbox_path = cfg.get("notifications", "outbox", "path", default="data/outbox.jsonl")
+        p = Path(outbox_path)
+        self.outbox_path = p if p.is_absolute() else cfg.repo_root / p
 
-    def _should_send(self, event_type: str) -> bool:
-        if not self.enabled or not self.url:
-            return False
+    def _event_allowed(self, event_type: str) -> bool:
         # Default to True for unknown/unspecified event types.
         return bool(self.event_flags.get(event_type, True))
 
     def send(self, event_type: str, payload: dict) -> bool:
-        """Send one alert. Returns True on success, False on skip/failure.
+        """Fan an alert out to every enabled sink. Returns True if any fired.
 
         Never raises -- notification failure must not break the trading loop.
         """
-        if not self._should_send(event_type):
+        if not self._event_allowed(event_type):
             return False
 
-        body = {"event": event_type, "data": redact(payload)}
+        body = {"ts": _utcnow(), "event": event_type, "data": redact(payload)}
+        fired = False
+        if self.outbox_enabled:
+            fired = self._write_outbox(body) or fired
+        if self.enabled and self.url:
+            fired = self._post_webhook(body) or fired
+        return fired
+
+    def _write_outbox(self, body: dict) -> bool:
+        try:
+            self.outbox_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.outbox_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(body, default=str) + "\n")
+            return True
+        except OSError as exc:
+            log.warning("Outbox write failed: %s", type(exc).__name__)
+            return False
+
+    def _post_webhook(self, body: dict) -> bool:
         headers = {"Content-Type": "application/json"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
@@ -69,11 +103,11 @@ class Notifier:
                 headers=headers, timeout=self.timeout,
             )
             if resp.status_code >= 300:
-                log.warning("Webhook %s returned %d", event_type, resp.status_code)
+                log.warning("Webhook %s returned %d", body.get("event"), resp.status_code)
                 return False
             return True
         except requests.RequestException as exc:
-            log.warning("Webhook %s failed: %s", event_type, type(exc).__name__)
+            log.warning("Webhook %s failed: %s", body.get("event"), type(exc).__name__)
             return False
 
     # -- typed convenience builders ------------------------------------------

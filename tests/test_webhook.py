@@ -53,9 +53,64 @@ def test_redaction_masks_secrets():
     assert "a" * 64 not in clean["nested"]["private_key"]
 
 
+def test_redaction_keeps_public_url_intact():
+    # Long slugs must not be mistaken for secret tokens.
+    out = redact({"url": "https://polymarket.com/market/a-very-long-market-slug-name-2026-final"})
+    assert out["url"].endswith("2026-final")
+    assert "REDACTED" not in out["url"]
+
+
 def test_mask_value_short():
     assert mask_value("abc") == "***REDACTED***"
     assert "len=" in mask_value("a-fairly-long-token-value")
+
+
+def _outbox_cfg(tmp_path, webhook_url=None):
+    return Config(
+        data=deep_merge(DEFAULTS, {
+            "notifications": {
+                "enabled": bool(webhook_url),
+                "outbox": {"enabled": True, "path": "outbox.jsonl"},
+            },
+        }),
+        secrets=Secrets(webhook_url=webhook_url),
+        repo_root=tmp_path,
+    )
+
+
+def test_outbox_writes_jsonl(tmp_path):
+    import json
+    n = Notifier(_outbox_cfg(tmp_path))
+    assert n.send("opportunity_detected", {"market": "Q?", "edge": 0.1}) is True
+    line = (tmp_path / "outbox.jsonl").read_text().strip()
+    evt = json.loads(line)
+    assert evt["event"] == "opportunity_detected"
+    assert evt["data"]["market"] == "Q?"
+    assert "ts" in evt
+
+
+def test_outbox_respects_event_flags(tmp_path):
+    cfg = _outbox_cfg(tmp_path)
+    cfg.data["notifications"]["events"] = {"risk_block": False}
+    n = Notifier(cfg)
+    assert n.send("risk_block", {"market": "Q?"}) is False
+    assert not (tmp_path / "outbox.jsonl").exists()
+
+
+def test_outbox_redacts_secrets(tmp_path):
+    n = Notifier(_outbox_cfg(tmp_path))
+    n.send("error", {"api_key": "supersecretapikeyvalue123456"})
+    content = (tmp_path / "outbox.jsonl").read_text()
+    assert "supersecretapikeyvalue123456" not in content
+    assert "REDACTED" in content
+
+
+def test_outbox_appends_multiple(tmp_path):
+    n = Notifier(_outbox_cfg(tmp_path))
+    n.send("opportunity_detected", {"market": "A"})
+    n.send("opportunity_detected", {"market": "B"})
+    lines = (tmp_path / "outbox.jsonl").read_text().strip().splitlines()
+    assert len(lines) == 2
 
 
 def test_send_actually_posts_redacted(monkeypatch, sample_market):

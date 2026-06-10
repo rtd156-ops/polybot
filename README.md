@@ -128,6 +128,20 @@ limits), `paper.*` (starting balance, stake, slippage).
 Subclass it to plug in ML, news, or LLM analysis and swap it into the engine —
 nothing downstream changes.
 
+## Getting alerts (and wiring Rook / OpenClaw)
+
+polybot emits every event to any enabled sink, redacted:
+
+- **File outbox** (`data/outbox.jsonl`, on by default) — an append-only JSONL feed
+  an external assistant can tail. Stream it with
+  `python scripts/notifications_tail.py --follow` (a cursor avoids repeats).
+- **Webhook** — set `WEBHOOK_URL`/`WEBHOOK_TOKEN` in `.env` to POST events to any
+  endpoint (Slack/Discord/n8n/your own relay).
+
+To have **Rook (OpenClaw)** notify you, install the bundled skill and point it at
+the outbox (same VPS) or the webhook (remote). See
+[integrations/openclaw/README.md](integrations/openclaw/README.md).
+
 ## VPS / 24-7 deployment
 
 See **[deploy/DEPLOY.md](deploy/DEPLOY.md)** for the full Ubuntu/Debian guide:

@@ -10,6 +10,10 @@ from __future__ import annotations
 import re
 from typing import Any
 
+# Keys whose values are public by nature -- skip the aggressive free-text token
+# heuristic for them so e.g. long market-URL slugs stay intact and clickable.
+_PUBLIC_KEYS = ("url",)
+
 # Substrings (case-insensitive) that mark a dict key as sensitive.
 _SENSITIVE_KEY_HINTS = (
     "private_key",
@@ -62,6 +66,8 @@ def redact(obj: Any) -> Any:
         for k, v in obj.items():
             if isinstance(k, str) and _is_sensitive_key(k):
                 out[k] = mask_value(v)
+            elif isinstance(k, str) and k.lower() in _PUBLIC_KEYS and isinstance(v, str):
+                out[k] = v  # public value (e.g. market URL): leave intact
             else:
                 out[k] = redact(v)
         return out
