@@ -19,6 +19,7 @@ data_sources:
   http_max_retries: 3
   http_backoff_seconds: 1.5
   user_agent: "polybot/1.0 (+analysis)"
+  rate_limit_per_sec: 8          # token-bucket cap on outbound API calls (0=off)
 
 # --- Market scanner filters -------------------------------------------------
 scanner:
@@ -74,18 +75,34 @@ risk:
   max_total_exposure_usd: 1000          # max open exposure overall
   max_new_positions_per_day: 10
   max_daily_loss_usd: 150               # halt new entries past this realized loss
+  max_drawdown_pct: 0.20                # halt new entries past 20% peak-to-now DD
   min_liquidity_usd: 5000               # reject below this (defense in depth)
   max_spread: 0.05                      # reject above this
+  min_price: 0.05                       # don't enter below 5c (edge usually illusory)
+  max_price: 0.95                       # ...or above 95c
   min_days_to_resolution: 1
   max_days_to_resolution: 180
+  # --- Position sizing ---
+  use_kelly: true                       # fractional-Kelly sizing (else fixed ticket)
+  kelly_multiplier: 0.5                 # half-Kelly: less variance, more robust
+  max_kelly_fraction: 0.10              # never stake >10% of bankroll on one bet
+  min_ticket_usd: 5                     # don't bother below this size
 
 # --- Paper trading engine ---------------------------------------------------
 paper:
   starting_balance_usd: 1000
-  default_order_notional_usd: 25        # stake per simulated entry
-  # Conservative fill model: pay the far side of the book, not the mid.
+  default_order_notional_usd: 25        # stake per entry when use_kelly is false
+  # Conservative fill model: walk the real book level-by-level (taker fills),
+  # not a single idealized mid price.
   fill_against_book: true
-  taker_slippage: 0.0                   # extra adverse slippage on top of ask/bid
+  taker_slippage: 0.0                   # extra adverse slippage on top of book
+  fee_bps: 0                            # Polymarket fee in bps (currently 0); formula modeled
+
+# --- Arbitrage (risk-free YES+NO < $1) -------------------------------------
+arbitrage:
+  enabled: false                        # opt-in; adds a NO-book fetch per market
+  min_edge: 0.01                        # require >=1c net edge after fees
+  max_notional_usd: 100                 # cap per arbitrage opportunity
 
 # --- Execution (interface shared by paper & live) ---------------------------
 execution:

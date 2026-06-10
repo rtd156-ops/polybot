@@ -11,9 +11,12 @@ at construction based on config. In analysis mode no orders are placed at all.
 
 from __future__ import annotations
 
+import signal
+import threading
 import time
 from typing import Optional
 
+from .arbitrage import detect_arbitrage
 from .config import Config
 from .clients.clob import ClobDataClient
 from .clients.gamma import GammaClient
@@ -59,6 +62,7 @@ class Engine:
             max_retries=int(cfg.get("data_sources", "http_max_retries", default=3)),
             backoff=float(cfg.get("data_sources", "http_backoff_seconds", default=1.5)),
             user_agent=str(cfg.get("data_sources", "user_agent", default="polybot/1.0")),
+            rate_limit_per_sec=float(cfg.get("data_sources", "rate_limit_per_sec", default=0)),
         )
         self.gamma = GammaClient(cfg.get("data_sources", "gamma_base_url"), http)
         self.clob = ClobDataClient(cfg.get("data_sources", "clob_base_url"), http)
@@ -68,6 +72,8 @@ class Engine:
         self.notifier = Notifier(cfg)
         self.ledger = ledger or Ledger(cfg.db_path())
         self.executor: ExecutionClient = self._build_executor()
+        self._stop = threading.Event()
+        self.arb_enabled = bool(cfg.get("arbitrage", "enabled", default=False))
 
     def _build_executor(self) -> ExecutionClient:
         """Choose execution backend. Live only if fully cleared, else paper."""
@@ -108,16 +114,37 @@ class Engine:
         log.info("Cycle complete: %s", stats.as_dict())
         return stats
 
+    def request_stop(self, *_args) -> None:
+        """Signal the loop to finish the current cycle and exit cleanly."""
+        if not self._stop.is_set():
+            log.info("Shutdown requested; will stop after the current cycle.")
+        self._stop.set()
+
+    def install_signal_handlers(self) -> None:
+        """Handle SIGTERM/SIGINT so `systemctl stop` shuts down gracefully.
+
+        Only valid in the main thread; ignored otherwise (e.g. under pytest).
+        """
+        try:
+            signal.signal(signal.SIGTERM, self.request_stop)
+            signal.signal(signal.SIGINT, self.request_stop)
+        except (ValueError, RuntimeError):
+            pass
+
     def run_loop(self, max_cycles: Optional[int] = None) -> None:
         interval = int(self.cfg.get("engine", "loop_interval_seconds", default=300))
         cycle = 0
+        self.install_signal_handlers()
         log.info("Starting loop (mode=%s, interval=%ds)", self.cfg.mode, interval)
-        while True:
+        while not self._stop.is_set():
             self.run_once()
             cycle += 1
             if max_cycles is not None and cycle >= max_cycles:
                 break
-            time.sleep(interval)
+            # Interruptible sleep: wake immediately on shutdown signal.
+            if self._stop.wait(timeout=interval):
+                break
+        log.info("Loop stopped after %d cycle(s); shutting down.", cycle)
 
     # -- per-market pipeline --------------------------------------------------
     def _process_market(self, market: Market, stats: CycleStats) -> None:
@@ -125,6 +152,10 @@ class Engine:
         outcome = Outcome.YES
         book = self.clob.fetch_book(market.yes_token_id or "")
         snap = build_snapshot(self.cfg, market, outcome, book)
+
+        # Optional risk-free arbitrage check (YES_ask + NO_ask < 1).
+        if self.arb_enabled:
+            self._check_arbitrage(market, book, stats)
 
         if not is_tradeable(self.cfg, snap):
             return  # cannot enter+exit reasonably -> not an actionable opportunity
@@ -151,8 +182,13 @@ class Engine:
             market.question[:60], est.edge, est.confidence,
         )
 
-        # Risk evaluation against current portfolio state.
-        state = RiskState(**self.ledger.risk_state_inputs(is_paper=self.executor.is_paper))
+        # Risk evaluation against current portfolio state (incl. equity/peak).
+        start = float(self.cfg.get("paper", "starting_balance_usd", default=1000))
+        state = RiskState(
+            **self.ledger.risk_state_inputs(
+                is_paper=self.executor.is_paper, starting_balance=start
+            )
+        )
         signal = self.risk.evaluate(opp, state)
         self.ledger.record_signal(signal)
         if not signal.accepted:
@@ -166,6 +202,21 @@ class Engine:
             return
 
         self._execute_paper(market, opp, signal, book, stats)
+
+    def _check_arbitrage(self, market: Market, yes_book, stats: CycleStats) -> None:
+        """Detect & record a risk-free YES+NO < $1 arbitrage, if any."""
+        no_book = self.clob.fetch_book(market.no_token_id or "")
+        arb = detect_arbitrage(self.cfg, market, yes_book, no_book)
+        if arb is None:
+            return
+        self.ledger.record_event("arbitrage_detected", arb.to_dict(), severity="info")
+        self.notifier.send("opportunity_detected", {
+            "market": arb.question, "outcome": "YES+NO", "market_price": arb.combined_cost,
+            "edge": arb.net_edge, "suggested_action": "ARBITRAGE BUY YES+NO",
+            "liquidity": arb.notional_usd, "url": arb.url,
+        })
+        log.info("ARBITRAGE: %s combined=%.4f net_edge=%.4f $%.0f",
+                 market.question[:50], arb.combined_cost, arb.net_edge, arb.notional_usd)
 
     def _execute_paper(self, market, opp, signal, book, stats: CycleStats) -> None:
         order = self.executor.place_limit_order(

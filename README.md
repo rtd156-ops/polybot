@@ -51,6 +51,30 @@ Gamma API ──► scanner ──► pricing ──► probability ──► ri
 | `notifications.py` | webhook alerts (redacted) |
 | `engine.py` | orchestrates a cycle / the loop |
 
+## Robustness features (distilled from the best public bots)
+
+These patterns were taken from the official Polymarket keeper, OctoBot, the
+Octagon risk engine, and the agent-next paper trader (the legit, vetted ones):
+
+- **Realistic fills** — paper orders *walk the real order book* level-by-level
+  (taker model), model Polymarket's fee formula `bps/10000 × min(p,1-p) × shares`,
+  and record slippage vs mid in bps. Partial fills when the book is too thin.
+- **Fractional-Kelly sizing** — stake = `½ × edge/(1-price) × bankroll`, capped at
+  10% of bankroll. Trims to remaining exposure headroom instead of rejecting.
+  (`risk.use_kelly`, falls back to a fixed ticket.)
+- **Drawdown circuit breaker** — halts new entries past `risk.max_drawdown_pct`
+  (peak-to-current equity), on top of the daily-loss limit.
+- **Price-band gate** — refuses entries below 5c / above 95c where edge is usually
+  illusory.
+- **Graceful shutdown** — SIGTERM/SIGINT finish the current cycle and close the
+  ledger cleanly (matters for `systemctl stop/restart`).
+- **Rate limiting** — token-bucket caps outbound API calls (`data_sources.rate_limit_per_sec`).
+- **Order reconciliation** — pure diff of desired vs open orders (cancel/place the
+  delta only); wired into the gated live client.
+- **Risk-free arbitrage** — optional detector for YES+NO < $1 (`arbitrage.enabled`).
+- **WebSocket order book** — opt-in reconnecting stream (`clients/ws.py`) for
+  low-latency strategies; REST polling remains the default.
+
 ## Operating modes
 
 - `analysis` — scan, score, alert. **No orders**, not even simulated.

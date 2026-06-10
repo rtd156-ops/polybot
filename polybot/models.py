@@ -102,6 +102,17 @@ class OrderBook:
 
 
 @dataclass
+class BookFill:
+    """Result of walking an order book to fill a target notional."""
+
+    avg_price: float                       # size-weighted average fill price
+    filled_size: float                     # shares actually filled
+    filled_notional: float                 # USD spent (price*size summed)
+    levels_consumed: int                   # how many book levels were touched
+    fully_filled: bool                     # False if book ran out of liquidity
+
+
+@dataclass
 class PricingSnapshot:
     """Computed pricing view of a market outcome at a point in time."""
 
@@ -194,6 +205,8 @@ class OrderResult:
     notional_usd: float
     is_paper: bool
     reason: str = ""
+    fee_usd: float = 0.0                    # modeled exchange fee
+    slippage_bps: float = 0.0              # avg fill vs mid, in basis points
     created_at: str = field(default_factory=utcnow)
 
     def to_dict(self) -> dict:

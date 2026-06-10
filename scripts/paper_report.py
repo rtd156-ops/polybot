@@ -28,6 +28,11 @@ def main() -> int:
         open_rows = ledger.open_positions(is_paper=True)
         blocked = sum(r["notional_usd"] for r in open_rows)
 
+        fills = ledger.query(
+            "SELECT COALESCE(SUM(fee_usd),0) f, COALESCE(AVG(slippage_bps),0) s, "
+            "COUNT(*) c FROM fills WHERE is_paper=1"
+        )[0]
+
         by_cat: dict[str, float] = {}
         for r in open_rows:
             by_cat[r["category"]] = by_cat.get(r["category"], 0.0) + r["notional_usd"]
@@ -40,6 +45,9 @@ def main() -> int:
         print(f"  win rate         : {win_rate:.1f}%")
         print(f"  open positions   : {len(open_rows)}")
         print(f"  capital blocked  : ${blocked:,.2f}")
+        print(f"  fills            : {fills['c']}")
+        print(f"  fees paid        : ${fills['f']:,.4f}")
+        print(f"  avg slippage     : {fills['s']:.1f} bps")
 
         print("\n  exposure by category:")
         for cat, amt in sorted(by_cat.items(), key=lambda x: -x[1]):

@@ -11,9 +11,68 @@ from typing import Optional
 
 from .config import Config
 from .logging_setup import get_logger
-from .models import Market, OrderBook, Outcome, PricingSnapshot
+from .models import BookFill, BookLevel, Market, OrderBook, Outcome, PricingSnapshot
 
 log = get_logger("polybot.pricing")
+
+
+def walk_book(levels: list[BookLevel], target_notional_usd: float) -> BookFill:
+    """Consume an order-book side level-by-level to fill a target USD notional.
+
+    Models a *real* taker fill: you eat the best level, then the next, paying a
+    worse price as you go -- not a single idealized price. Returns the
+    size-weighted average price actually paid and whether the book had enough
+    depth. (``levels`` must be sorted best-first.)
+    """
+    if target_notional_usd <= 0 or not levels:
+        return BookFill(0.0, 0.0, 0.0, 0, False)
+
+    remaining = target_notional_usd
+    spent = 0.0
+    shares = 0.0
+    touched = 0
+    for lvl in levels:
+        if remaining <= 1e-9:
+            break
+        touched += 1
+        level_notional = lvl.price * lvl.size
+        if level_notional >= remaining:
+            take_shares = remaining / lvl.price
+            shares += take_shares
+            spent += take_shares * lvl.price
+            remaining = 0.0
+            break
+        shares += lvl.size
+        spent += level_notional
+        remaining -= level_notional
+
+    if shares <= 0:
+        return BookFill(0.0, 0.0, 0.0, touched, False)
+    return BookFill(
+        avg_price=spent / shares,
+        filled_size=shares,
+        filled_notional=spent,
+        levels_consumed=touched,
+        fully_filled=remaining <= 1e-9,
+    )
+
+
+def exchange_fee_usd(fee_bps: float, price: float, shares: float) -> float:
+    """Polymarket-style fee: bps/10000 * min(price, 1-price) * shares.
+
+    Fees are symmetric around 0.5 (cheaper at the extremes). Polymarket's fee is
+    currently 0, but we model the formula so paper PnL stays honest if it changes.
+    """
+    if fee_bps <= 0 or shares <= 0 or not (0 < price < 1):
+        return 0.0
+    return (fee_bps / 10000.0) * min(price, 1.0 - price) * shares
+
+
+def slippage_bps(fill_price: float, reference_mid: Optional[float]) -> float:
+    """Adverse deviation of the fill vs mid, in basis points (always >= 0)."""
+    if not reference_mid or reference_mid <= 0:
+        return 0.0
+    return abs(fill_price - reference_mid) / reference_mid * 10000.0
 
 
 def build_snapshot(

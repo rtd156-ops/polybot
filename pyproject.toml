@@ -15,7 +15,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0,<9"]
-live = ["py-clob-client>=0.17", "web3>=6.0"]
+live = ["py-clob-client>=0.17", "web3>=6.0", "websocket-client>=1.6"]
 
 [tool.setuptools]
 packages = ["polybot", "polybot.clients", "polybot.execution"]

@@ -93,7 +93,9 @@ CREATE TABLE IF NOT EXISTS paper_orders (
     filled_size REAL,
     notional_usd REAL,
     status TEXT,
-    reason TEXT
+    reason TEXT,
+    fee_usd REAL DEFAULT 0,
+    slippage_bps REAL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS live_orders (
     order_id TEXT PRIMARY KEY,
@@ -107,7 +109,9 @@ CREATE TABLE IF NOT EXISTS live_orders (
     filled_size REAL,
     notional_usd REAL,
     status TEXT,
-    reason TEXT
+    reason TEXT,
+    fee_usd REAL DEFAULT 0,
+    slippage_bps REAL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS positions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -134,7 +138,9 @@ CREATE TABLE IF NOT EXISTS fills (
     side TEXT,
     price REAL,
     size REAL,
-    is_paper INTEGER
+    is_paper INTEGER,
+    fee_usd REAL DEFAULT 0,
+    slippage_bps REAL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS balance_snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -180,6 +186,21 @@ class Ledger:
     def _init_schema(self) -> None:
         with self._tx() as cur:
             cur.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after a DB was first created. Idempotent."""
+        wanted = {
+            "paper_orders": [("fee_usd", "REAL DEFAULT 0"), ("slippage_bps", "REAL DEFAULT 0")],
+            "live_orders": [("fee_usd", "REAL DEFAULT 0"), ("slippage_bps", "REAL DEFAULT 0")],
+            "fills": [("fee_usd", "REAL DEFAULT 0"), ("slippage_bps", "REAL DEFAULT 0")],
+        }
+        with self._tx() as cur:
+            for table, cols in wanted.items():
+                existing = {r["name"] for r in cur.execute(f"PRAGMA table_info({table})")}
+                for name, decl in cols:
+                    if name not in existing:
+                        cur.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
     @contextmanager
     def _tx(self) -> Iterator[sqlite3.Cursor]:
@@ -253,20 +274,23 @@ class Ledger:
             cur.execute(
                 f"""INSERT OR REPLACE INTO {table}(order_id,created_at,market_id,
                     token_id,outcome,side,price,size,filled_size,notional_usd,
-                    status,reason) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    status,reason,fee_usd,slippage_bps)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (d["order_id"], d["created_at"], d["market_id"], d["token_id"],
                  d["outcome"], d["side"], d["price"], d["size"], d["filled_size"],
-                 d["notional_usd"], d["status"], d["reason"]),
+                 d["notional_usd"], d["status"], d["reason"],
+                 d.get("fee_usd", 0.0), d.get("slippage_bps", 0.0)),
             )
 
     def record_fill(self, order: OrderResult) -> None:
         with self._tx() as cur:
             cur.execute(
                 """INSERT INTO fills(created_at,order_id,market_id,token_id,side,
-                   price,size,is_paper) VALUES(?,?,?,?,?,?,?,?)""",
+                   price,size,is_paper,fee_usd,slippage_bps)
+                   VALUES(?,?,?,?,?,?,?,?,?,?)""",
                 (_now(), order.order_id, order.market_id, order.token_id,
                  order.side.value, order.price, order.filled_size,
-                 1 if order.is_paper else 0),
+                 1 if order.is_paper else 0, order.fee_usd, order.slippage_bps),
             )
 
     def open_position(self, *, market: Market, order: OrderResult) -> int:
@@ -330,8 +354,10 @@ class Ledger:
             (OrderStatus.OPEN.value, 1 if is_paper else 0),
         )
 
-    def risk_state_inputs(self, is_paper: bool = True) -> dict[str, Any]:
-        """Aggregate live exposure + today's counters for the RiskManager."""
+    def risk_state_inputs(
+        self, is_paper: bool = True, starting_balance: float = 0.0
+    ) -> dict[str, Any]:
+        """Aggregate exposure, daily counters, and equity for the RiskManager."""
         positions = self.open_positions(is_paper)
         by_cat: dict[str, float] = {}
         by_mkt: dict[str, float] = {}
@@ -342,19 +368,36 @@ class Ledger:
             by_mkt[p["market_id"]] = by_mkt.get(p["market_id"], 0.0) + p["notional_usd"]
 
         today = _today()
+        ip = 1 if is_paper else 0
         new_today = self.query(
             "SELECT COUNT(*) c FROM positions WHERE substr(opened_at,1,10)=? AND is_paper=?",
-            (today, 1 if is_paper else 0),
+            (today, ip),
         )[0]["c"]
         realized_today = self.query(
             """SELECT COALESCE(SUM(realized_pnl),0) p FROM positions
                WHERE substr(closed_at,1,10)=? AND is_paper=?""",
-            (today, 1 if is_paper else 0),
+            (today, ip),
         )[0]["p"]
+        realized_total = self.query(
+            "SELECT COALESCE(SUM(realized_pnl),0) p FROM positions WHERE is_paper=?",
+            (ip,),
+        )[0]["p"]
+        peak_snapshot = self.query(
+            "SELECT COALESCE(MAX(equity_usd),0) e FROM balance_snapshots WHERE is_paper=?",
+            (ip,),
+        )[0]["e"]
+
+        current_equity = float(starting_balance) + float(realized_total)
+        peak_equity = max(float(starting_balance), float(peak_snapshot), current_equity)
+        # Free bankroll for Kelly = equity not already committed to open positions.
+        bankroll = max(0.0, current_equity - total)
         return {
             "total_exposure_usd": total,
             "exposure_by_category": by_cat,
             "exposure_by_market": by_mkt,
             "new_positions_today": int(new_today),
             "realized_pnl_today": float(realized_today),
+            "bankroll_usd": bankroll,
+            "peak_equity_usd": peak_equity,
+            "current_equity_usd": current_equity,
         }

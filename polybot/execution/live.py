@@ -124,10 +124,20 @@ class PolymarketLiveExecution(ExecutionClient):
         # return self._client.get_order(order_id) -> normalized OrderResult
         raise LiveExecutionDisabled("get_order_status: live trading is not wired in V1.")
 
-    def reconcile(self) -> list[OrderResult]:
-        """Fetch open orders/positions from CLOB and reconcile vs. ledger."""
+    def reconcile(self, desired=None, open_orders=None):
+        """Reconcile desired vs. open orders, returning the minimal action plan.
+
+        The diff itself is pure (``execution.reconcile.reconcile``) and fully
+        unit-tested. Actually fetching open orders from the CLOB and submitting
+        the plan stays gated until live is wired & tested.
+        """
         self._guard()
-        raise LiveExecutionDisabled("reconcile: live trading is not wired in V1.")
+        from .reconcile import reconcile as _reconcile
+        if desired is None or open_orders is None:
+            raise LiveExecutionDisabled(
+                "reconcile: fetching live open orders is not wired in V1."
+            )
+        return _reconcile(desired, open_orders)
 
     def _guard(self) -> None:
         if not self.cfg.live_truly_enabled:
