@@ -1,0 +1,28 @@
+# =============================================================================
+# Per-host overrides. Copy to config.local.yaml (which is .gitignored).
+# Only include the keys you want to change; they deep-merge over config.yaml.
+# =============================================================================
+
+# Run the VPS in paper mode 24/7 first.
+mode: paper
+
+scanner:
+  min_volume_usd: 50000
+  allowed_categories:
+    - "Crypto"
+    - "Politics"
+
+paper:
+  starting_balance_usd: 2000
+  default_order_notional_usd: 20
+
+notifications:
+  enabled: true
+
+logging:
+  level: INFO
+  format: json
+
+# Leave live OFF. Flipping this alone does nothing unless mode: live too.
+execution:
+  live_enabled: false

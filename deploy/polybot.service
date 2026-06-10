@@ -1,0 +1,51 @@
+# systemd unit for polybot -- runs the analysis/paper loop 24/7.
+# Install: see deploy/DEPLOY.md. Starts in whatever mode config.local.yaml sets
+# (keep it analysis or paper). Live stays gated off regardless.
+#
+#   sudo cp deploy/polybot.service /etc/systemd/system/polybot.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now polybot
+
+[Unit]
+Description=polybot Polymarket scanner / paper-trading loop
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=polymarketbot
+Group=polymarketbot
+WorkingDirectory=/opt/polybot
+Environment=POLYBOT_ROOT=/opt/polybot
+# Use the venv interpreter; --loop runs continuously at engine.loop_interval_seconds.
+ExecStart=/opt/polybot/.venv/bin/python /opt/polybot/scripts/run_once.py --loop
+Restart=on-failure
+RestartSec=10
+# Give up only after repeated rapid failures (5 in 5 min) to avoid crash loops.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# --- Logging: straight to journald ---
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=polybot
+
+# --- Resource limits (tune for your VPS) ---
+MemoryMax=512M
+CPUQuota=50%
+TasksMax=64
+
+# --- Hardening ---
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# polybot only needs to write its SQLite DB + logs under the working dir:
+ReadWritePaths=/opt/polybot/data
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

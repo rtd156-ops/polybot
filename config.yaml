@@ -1,0 +1,123 @@
+# =============================================================================
+# polybot base configuration (VERSIONED).
+# Override per-host values in config.local.yaml (NOT committed). Secrets go in
+# .env only. CLI flags > config.local.yaml > config.yaml > built-in defaults.
+# =============================================================================
+
+# Operating mode:
+#   analysis -> scan + score + alert. No orders, not even simulated.
+#   paper    -> analysis + simulated orders/fills/PnL in SQLite.
+#   live     -> real orders. Hard-gated; also requires execution.live_enabled.
+mode: analysis
+
+# --- Data sources (PUBLIC, read-only). No auth required. --------------------
+data_sources:
+  gamma_base_url: "https://gamma-api.polymarket.com"
+  clob_base_url: "https://clob.polymarket.com"
+  data_base_url: "https://data-api.polymarket.com"
+  http_timeout_seconds: 15
+  http_max_retries: 3
+  http_backoff_seconds: 1.5
+  user_agent: "polybot/1.0 (+analysis)"
+
+# --- Market scanner filters -------------------------------------------------
+scanner:
+  max_markets_scanned: 400        # cap pulled from Gamma per run
+  require_active: true            # market.active == true
+  require_open: true              # market.closed == false
+  min_volume_usd: 20000           # cumulative traded volume
+  min_liquidity_usd: 5000         # resting liquidity / Gamma "liquidity"
+  max_spread: 0.05                # max (ask-bid) allowed, in price units (0-1)
+  min_days_to_resolution: 1       # avoid markets resolving in <24h
+  max_days_to_resolution: 180     # avoid very far / illiquid long-dated
+  allowed_categories:             # empty list => allow all categories
+    - "Crypto"
+    - "Politics"
+    - "Sports"
+    - "Economy"
+  # Gamma's /markets endpoint frequently returns no category (it lives on the
+  # parent event). When true, such markets pass the category gate instead of
+  # being rejected wholesale. Set false to only trade explicitly-tagged markets.
+  allow_uncategorized: true
+  # Heuristic block-list for ambiguous / poorly-specified resolution rules.
+  ambiguous_keywords:
+    - "subjective"
+    - "at the discretion"
+    - "tbd"
+    - "to be determined"
+    - "unclear"
+
+# --- Pricing / opportunity detection ---------------------------------------
+pricing:
+  min_useful_liquidity_usd: 250   # min notional at top levels for entry+exit
+  extreme_probability_low: 0.08   # "extreme" YES prob threshold (low)
+  extreme_probability_high: 0.92  # "extreme" YES prob threshold (high)
+  wide_spread_factor: 1.5         # spread > factor*scanner.max_spread => signal
+  strong_move_threshold: 0.10     # |price - prior| triggering a "moved" signal
+
+# --- Probability model (heuristic V1) --------------------------------------
+probability:
+  min_edge: 0.04                  # min |estimated - market| to emit opportunity
+  min_confidence: 0.35            # min model confidence to emit opportunity
+  # Weights for the heuristic blend (documented in probability.py).
+  weights:
+    momentum: 0.30
+    liquidity: 0.20
+    time_to_close: 0.15
+    orderbook_stability: 0.20
+    category_prior: 0.15
+
+# --- Risk manager -----------------------------------------------------------
+risk:
+  max_notional_per_market_usd: 100      # max stake on a single market
+  max_notional_per_category_usd: 400    # max open exposure per category
+  max_total_exposure_usd: 1000          # max open exposure overall
+  max_new_positions_per_day: 10
+  max_daily_loss_usd: 150               # halt new entries past this realized loss
+  min_liquidity_usd: 5000               # reject below this (defense in depth)
+  max_spread: 0.05                      # reject above this
+  min_days_to_resolution: 1
+  max_days_to_resolution: 180
+
+# --- Paper trading engine ---------------------------------------------------
+paper:
+  starting_balance_usd: 1000
+  default_order_notional_usd: 25        # stake per simulated entry
+  # Conservative fill model: pay the far side of the book, not the mid.
+  fill_against_book: true
+  taker_slippage: 0.0                   # extra adverse slippage on top of ask/bid
+
+# --- Execution (interface shared by paper & live) ---------------------------
+execution:
+  # MASTER LIVE SWITCH. Must be true *and* mode=live for real orders. OFF here.
+  live_enabled: false
+  live_order_type: "limit"              # never market-aggressive by default
+  live_max_order_notional_usd: 50       # extra cap independent of risk manager
+  status_poll_seconds: 5
+
+# --- Notifications ----------------------------------------------------------
+notifications:
+  enabled: true                          # webhook URL still required (from .env)
+  timeout_seconds: 10
+  events:                                # toggle individual event types
+    opportunity_detected: true
+    signal_rejected: false               # noisy; off by default
+    paper_order_opened: true
+    paper_order_closed: true
+    live_order_created: true
+    live_order_filled: true
+    risk_block: false
+    daily_report: true
+    error: true
+
+# --- Persistence / logging --------------------------------------------------
+storage:
+  db_path: "data/polybot.db"
+logging:
+  level: "INFO"                          # DEBUG, INFO, WARNING, ERROR
+  format: "json"                         # "json" (journald-friendly) or "plain"
+
+# --- Engine loop ------------------------------------------------------------
+engine:
+  loop_interval_seconds: 300             # paper/analysis loop cadence
+  scan_top_n_for_book: 60                # fetch CLOB book for top N filtered mkts
