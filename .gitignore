@@ -5,6 +5,7 @@
 config.local.yaml
 *.local.yaml
 !config.local.yaml.example
+watcher.env
 
 # Runtime state
 *.db

@@ -1,0 +1,52 @@
+# Local, LLM-free outbox watcher for polybot. Sends WhatsApp/OpenClaw alerts
+# ONLY when real events appear in data/outbox.jsonl -- no per-minute LLM polling.
+#
+# Install (see deploy/WATCHER.md):
+#   sudo cp deploy/polybot-local-watcher.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now polybot-local-watcher
+#
+# It does NOT touch trading, config, or the main polybot.service.
+
+[Unit]
+Description=polybot local outbox watcher (LLM-free alerts)
+After=polybot.service
+# Watcher is best-effort; it must never block or affect the trading service.
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=polymarketbot
+Group=polymarketbot
+WorkingDirectory=/opt/polybot
+Environment=POLYBOT_ROOT=/opt/polybot
+# Delivery command + tunables live here (git-ignored, create on the VPS).
+# The '-' means "optional": the watcher runs fine without it (logs to journald).
+EnvironmentFile=-/opt/polybot/watcher.env
+ExecStart=/opt/polybot/.venv/bin/python /opt/polybot/scripts/local_watcher.py
+Restart=always
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=polybot-watcher
+
+# --- Resource limits (tiny: it just tails a file) ---
+MemoryMax=128M
+CPUQuota=10%
+TasksMax=16
+
+# --- Hardening ---
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# Only needs to read the outbox and write its cursor/dead-letter under data/.
+ReadWritePaths=/opt/polybot/data
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
