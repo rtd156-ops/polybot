@@ -51,14 +51,45 @@ sudo chmod 600 /opt/polybot/watcher.env                 # if it references a tok
 ```
 
 > **What command do I put there?** Whatever your VPS already uses to reach you.
-> - If OpenClaw exposes a CLI to message you: `WATCHER_SEND_CMD=openclaw notify --to me --stdin`
-> - If you have a local WhatsApp gateway: `WATCHER_SEND_CMD=curl -fsS -X POST "$URL" --data-binary @-`
-> - WhatsApp Cloud API example is in `watcher.env.example`.
+> If OpenClaw is installed but only the privileged user (root) has the WhatsApp
+> channel — the common case — use the **secure sudo bridge** below instead of
+> putting credentials on the bot user.
 >
-> I could not auto-detect your exact channel from outside the VPS. To find it,
-> check what's installed: `command -v openclaw; systemctl list-units | grep -i whats`.
 > **Until `WATCHER_SEND_CMD` is set, the watcher still runs and logs every alert
 > to journald** — so nothing is lost; you just won't get WhatsApp yet.
+
+### 2b. Secure OpenClaw → WhatsApp bridge (recommended)
+
+The watcher runs as `polymarketbot`, which must NOT hold OpenClaw's credentials.
+The bridge lets it deliver alerts via a single root-run wrapper, with **no secret
+copied to the bot user** and the recipient **locked** in a root-only config (the
+bot user cannot redirect messages):
+
+```bash
+sudo bash /opt/polybot/deploy/install_notify_bridge.sh
+sudo nano /etc/polybot-notify.conf          # set POLYBOT_NOTIFY_TO=+52XXXXXXXXXX
+
+# Test as root, then as the bot user (both should deliver to your WhatsApp):
+echo "✅ polybot bridge OK" | /usr/local/bin/polybot-notify
+echo "✅ via sudo"          | sudo -u polymarketbot sudo -n /usr/local/bin/polybot-notify
+
+# Wire the watcher to it:
+echo 'WATCHER_SEND_CMD=sudo -n /usr/local/bin/polybot-notify' \
+  | sudo tee -a /opt/polybot/watcher.env
+sudo systemctl restart polybot-local-watcher
+```
+
+How it stays safe: `polymarketbot` may run **only** `/usr/local/bin/polybot-notify`
+as root (locked sudoers rule, NOPASSWD, single path). That wrapper reads the
+message from stdin and always sends to the fixed number in `/etc/polybot-notify.conf`
+(root:root 0600) — argv from the caller is ignored, so the bot user can neither
+run anything else as root nor change the destination. OpenClaw's credentials never
+leave root.
+
+> Least-privilege variant: if OpenClaw's config belongs to a dedicated user (not
+> root), change `(root)` to that user in `deploy/sudoers.d-polybot-notify`, set
+> `POLYBOT_NOTIFY_HOME` to its home in `/etc/polybot-notify.conf`, and use
+> `WATCHER_SEND_CMD=sudo -n -u <that-user> /usr/local/bin/polybot-notify`.
 
 ## 3. Validate BEFORE installing the service
 

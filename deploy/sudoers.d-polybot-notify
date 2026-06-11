@@ -1,0 +1,11 @@
+# Install to /etc/sudoers.d/polybot-notify  (owner root:root, mode 0440)
+# Validate first:  sudo visudo -cf deploy/sudoers.d-polybot-notify
+#
+# Grants the unprivileged bot user permission to run ONLY the locked notify
+# wrapper as root, with no password. The wrapper reads the message from stdin
+# and sends to a fixed recipient, so this does NOT let polymarketbot run
+# anything else as root, nor redirect alerts. No secret is shared with the user.
+#
+# Least-privilege variant: if OpenClaw's config belongs to a dedicated user
+# instead of root, replace (root) with (that-user) here AND in WATCHER_SEND_CMD.
+polymarketbot ALL=(root) NOPASSWD: /usr/local/bin/polybot-notify

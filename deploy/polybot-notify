@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# polybot-notify -- deliver ONE alert to a FIXED WhatsApp recipient via OpenClaw.
+#
+# Why this exists: the watcher runs as the unprivileged `polymarketbot` user,
+# which must NOT hold OpenClaw's WhatsApp credentials. This wrapper runs as the
+# privileged user (root, via a locked sudoers rule) that already has OpenClaw
+# configured, so no secret is ever copied to the bot user. The message is read
+# from STDIN; the recipient/channel come from a ROOT-ONLY config, never from the
+# caller -- so the bot user cannot redirect messages anywhere else.
+#
+# Install: see deploy/WATCHER.md / deploy/install_notify_bridge.sh
+set -euo pipefail
+
+CONF="${POLYBOT_NOTIFY_CONF:-/etc/polybot-notify.conf}"
+if [ -r "$CONF" ]; then
+  # shellcheck disable=SC1090
+  . "$CONF"
+fi
+
+# Recipient is mandatory and comes ONLY from the root-only config.
+: "${POLYBOT_NOTIFY_TO:?set POLYBOT_NOTIFY_TO in $CONF (root-only)}"
+CHANNEL="${POLYBOT_NOTIFY_CHANNEL:-whatsapp}"
+OPENCLAW="${OPENCLAW_BIN:-/usr/bin/openclaw}"
+# OpenClaw finds its config via HOME; root's config lives in /root by default.
+export HOME="${POLYBOT_NOTIFY_HOME:-/root}"
+
+# Message comes from STDIN only. Any argv is ignored, so the caller cannot
+# influence the recipient/channel. Cap length and strip NULs defensively.
+msg="$(cat || true)"
+msg="$(printf '%s' "$msg" | tr -d '\000' | head -c 1000)"
+[ -n "$msg" ] || exit 0
+
+exec "$OPENCLAW" message send --channel "$CHANNEL" -t "$POLYBOT_NOTIFY_TO" -m "$msg"

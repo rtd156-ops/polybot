@@ -1,0 +1,17 @@
+# =============================================================================
+# polybot-notify recipient config. Copy to /etc/polybot-notify.conf on the VPS.
+#   sudo cp deploy/polybot-notify.conf.example /etc/polybot-notify.conf
+#   sudo chown root:root /etc/polybot-notify.conf
+#   sudo chmod 600 /etc/polybot-notify.conf      # root-only; bot user can't read/redirect
+# This pins WHERE alerts go. It lives outside the repo on purpose (no PII in git).
+# =============================================================================
+
+# Your WhatsApp number (E.164). REQUIRED.
+POLYBOT_NOTIFY_TO=+52XXXXXXXXXX
+
+# Channel name as OpenClaw knows it (default: whatsapp).
+POLYBOT_NOTIFY_CHANNEL=whatsapp
+
+# Override only if needed:
+# OPENCLAW_BIN=/usr/bin/openclaw
+# POLYBOT_NOTIFY_HOME=/root          # where OpenClaw's config/HOME lives
